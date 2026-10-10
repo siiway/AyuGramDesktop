@@ -1,0 +1,148 @@
+name: Build Linux release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Exact AyuGram/AyuGramDesktop tag to build (for example v7.2.9)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      upstream_tag: ${{ steps.source.outputs.upstream_tag }}
+      upstream_commit: ${{ steps.source.outputs.upstream_commit }}
+      upstream_date: ${{ steps.source.outputs.upstream_date }}
+      build_date: ${{ steps.source.outputs.build_date }}
+      triggered_by: ${{ steps.source.outputs.triggered_by }}
+    steps:
+      - name: Check out workflow helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+      - name: Validate requested tag and resolve upstream revision
+        id: source
+        env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$UPSTREAM_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid upstream tag '$UPSTREAM_TAG'; expected a version tag such as v7.2.9."
+            exit 1
+          fi
+          git init upstream
+          git -C upstream remote add origin https://github.com/AyuGram/AyuGramDesktop.git
+          git -C upstream fetch --no-tags origin "refs/tags/$UPSTREAM_TAG:refs/tags/requested"
+          if ! git -C upstream cat-file -e 'refs/tags/requested^{commit}'; then
+            echo "::error::Upstream tag '$UPSTREAM_TAG' does not resolve to a commit."
+            exit 1
+          fi
+          commit="$(git -C upstream rev-parse 'refs/tags/requested^{commit}')"
+          git -C upstream checkout --detach "$commit"
+          test "$(git -C upstream rev-parse HEAD)" = "$commit"
+          git -C upstream submodule sync --recursive
+          git -C upstream -c submodule.fetchJobs=4 submodule update --init --recursive
+          version="${UPSTREAM_TAG#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release version derived from '$UPSTREAM_TAG'."; exit 1; }
+          upstream_epoch="$(git -C upstream show -s --format=%ct "$commit")"
+          upstream_date="$(date -u -d "@$upstream_epoch" +'%Y-%m-%dT%H:%M:%SZ')"
+          build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          {
+            echo "upstream_tag=$UPSTREAM_TAG"
+            echo "upstream_commit=$commit"
+            echo "version=$version"
+            echo "upstream_date=$upstream_date"
+            echo "build_date=$build_date"
+            echo "triggered_by=${GITHUB_ACTOR}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved $UPSTREAM_TAG to $commit ($upstream_date)"
+      - name: Prepare official Linux build environment
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user poetry
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ./Telegram/build/prepare/linux.sh
+      - name: Build upstream release binary
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$PWD:/usr/src/tdesktop" \
+            tdesktop:centos_env \
+            /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+            -D TDESKTOP_API_ID=2040 \
+            -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
+      - name: Package archive and Debian package
+        working-directory: upstream
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+          UPSTREAM_TAG: ${{ steps.source.outputs.upstream_tag }}
+          UPSTREAM_COMMIT: ${{ steps.source.outputs.upstream_commit }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/package-linux.sh"
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets
+          path: upstream/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets
+          path: dist
+      - name: Check tag and release do not already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag '$TAG' already exists in $GITHUB_REPOSITORY; refusing to replace or reuse it."
+            exit 1
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Release '$TAG' already exists in $GITHUB_REPOSITORY; refusing to replace it."
+            exit 1
+          fi
+      - name: Prepare and validate release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          UPSTREAM_TAG: ${{ needs.build.outputs.upstream_tag }}
+          UPSTREAM_COMMIT: ${{ needs.build.outputs.upstream_commit }}
+          UPSTREAM_DATE: ${{ needs.build.outputs.upstream_date }}
+          BUILD_DATE: ${{ needs.build.outputs.build_date }}
+          TRIGGERED_BY: ${{ needs.build.outputs.triggered_by }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/release-notes.sh" dist
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ needs.build.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" dist/AyuGram-"$VERSION"-linux-x86_64.tar.gz dist/ayugram_"$VERSION"_amd64.deb dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "AyuGram $TAG — Linux x86_64" \
+            --notes-file dist/RELEASE_NOTES.md
