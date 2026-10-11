@@ -69,6 +69,10 @@ jobs:
           echo "Resolved $UPSTREAM_TAG to $commit ($upstream_date)"
       - name: Prepare official Linux build environment
         working-directory: upstream
+        env:
+          JOBS: '2'
+          BUILDKIT_MAX_PARALLELISM: '2'
+          BUILDKIT_PROGRESS: plain
         run: |
           set -euo pipefail
           python3 -m pip install --user poetry
@@ -76,10 +80,16 @@ jobs:
           ./Telegram/build/prepare/linux.sh
       - name: Build upstream release binary
         working-directory: upstream
+        env:
+          BUILD_JOBS: '2'
         run: |
           set -euo pipefail
           docker run --rm --user "$(id -u):$(id -g)" \
+            --cpus=2 \
+            --memory=12g \
+            --memory-swap=12g \
             --volume "$PWD:/usr/src/tdesktop" \
+            --env CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS" \
             tdesktop:centos_env \
             /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
             -D TDESKTOP_API_ID=2040 \
