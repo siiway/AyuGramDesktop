@@ -93,7 +93,9 @@ jobs:
           python3 -m venv "$HOME/.venvs/poetry"
           "$HOME/.venvs/poetry/bin/python" -m pip install --upgrade pip
           "$HOME/.venvs/poetry/bin/python" -m pip install poetry
+          export PATH="$HOME/.venvs/poetry/bin:$PATH"
           echo "$HOME/.venvs/poetry/bin" >> "$GITHUB_PATH"
+          poetry --version
           ./Telegram/build/prepare/linux.sh
       - name: Build upstream release binary
         working-directory: upstream
