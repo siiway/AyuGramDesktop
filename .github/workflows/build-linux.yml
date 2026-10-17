@@ -90,8 +90,10 @@ jobs:
           BUILDKIT_PROGRESS: plain
         run: |
           set -euo pipefail
-          python3 -m pip install --user poetry
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$HOME/.venvs/poetry"
+          "$HOME/.venvs/poetry/bin/python" -m pip install --upgrade pip
+          "$HOME/.venvs/poetry/bin/python" -m pip install poetry
+          echo "$HOME/.venvs/poetry/bin" >> "$GITHUB_PATH"
           ./Telegram/build/prepare/linux.sh
       - name: Build upstream release binary
         working-directory: upstream
@@ -100,9 +102,9 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --user "$(id -u):$(id -g)" \
-            --cpus=2 \
-            --memory=12g \
-            --memory-swap=12g \
+            --cpus=12 \
+            --memory=16g \
+            --memory-swap=4g \
             --volume "$PWD:/usr/src/tdesktop" \
             --env CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS" \
             tdesktop:centos_env \
