@@ -25,7 +25,7 @@ jobs:
     #   build_date: ${{ steps.source.outputs.build_date }}
     #   triggered_by: ${{ steps.source.outputs.triggered_by }}
     steps:
-      - name: Inspect runner paths
+      - name: "[test] Inspect runner paths"
         run: |
           set -eux
           echo "PWD=$PWD"
@@ -33,6 +33,13 @@ jobs:
           echo "RUNNER_WORKSPACE=${RUNNER_WORKSPACE:-unset}"
           id
           ls -ld "$GITHUB_WORKSPACE"
+      - name: "[test] Verify Docker workspace mount"
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            alpine:latest \
+            sh -c 'ls -la /workspace'
   #     - name: Check out workflow helpers
   #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
   #       with:
